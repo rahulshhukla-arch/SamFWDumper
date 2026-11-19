@@ -1,0 +1,61 @@
+name: S24 FanCam missing dependencies
+
+on:
+  workflow_dispatch:
+    inputs:
+      firmware_url:
+        description: 'Direct S24 Ultra firmware ZIP link (sf06.click)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  extract-dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout SamFWDumper tools
+        uses: actions/checkout@v4
+
+      - name: Install extraction requirements
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y jq xz-utils lz4 unzip curl wget e2fsprogs android-sdk-libsparse-utils
+          chmod +x bin/lp/* bin/ext4/* bin/erofs-utils/* bin/py_scripts/* scripts/system_files.sh || true
+
+      - name: Extract S24 system lib64 and build.prop
+        env:
+          FIRMWARE_URL: ${{ inputs.firmware_url }}
+        run: |
+          set -euo pipefail
+          bash scripts/system_files.sh "$FIRMWARE_URL" 0 \
+            false false false false false true false false false false false true false false false
+          test -s output/lib64.tar
+
+      - name: Select missing native dependencies only
+        run: |
+          set -euo pipefail
+          mkdir -p missing_libs
+          cp output/build.prop missing_libs/build.prop
+          tar -tf output/lib64.tar > /tmp/s24_libpaths.txt
+          grep -E '(^|/)(libmultisourceseparator\.so|libsbs\.so|libsimba\.media\.samsung\.so)$' /tmp/s24_libpaths.txt > /tmp/selected_libs.txt || true
+          echo 'Matched files:'
+          cat /tmp/selected_libs.txt
+          for lib in libmultisourceseparator.so libsbs.so; do
+            if ! grep -Eq "(^|/)$lib$" /tmp/selected_libs.txt; then
+              echo "ERROR: $lib not found in extracted system/lib64" >&2
+              exit 1
+            fi
+          done
+          tar -xf output/lib64.tar -C missing_libs -T /tmp/selected_libs.txt
+          find missing_libs -type f -printf '%P: %s bytes\n'
+
+      - name: Upload small files as GitHub artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: S24-FanCam-Dependencies
+          path: missing_libs/
+          if-no-files-found: error
+          retention-days: 7
