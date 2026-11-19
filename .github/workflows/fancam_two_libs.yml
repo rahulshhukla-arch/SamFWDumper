@@ -1,0 +1,51 @@
+name: Extract two S24 My FanCam libraries
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fancam_two_libs.yml'
+  workflow_dispatch:
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download previously extracted archive from GoFile
+        shell: bash
+        run: |
+          set -euo pipefail
+          CODE='bfZCPcxp'
+          TOKEN=$(curl -fsSL -X POST https://api.gofile.io/accounts | jq -r '.data.token // empty')
+          if [ -n "$TOKEN" ]; then
+            INFO=$(curl -fsSL -H "Authorization: Bearer $TOKEN" "https://api.gofile.io/contents/$CODE")
+          else
+            INFO=$(curl -fsSL "https://api.gofile.io/contents/$CODE?wt=4fd6sg89d7s6")
+          fi
+          echo "GoFile status: $(echo "$INFO" | jq -r '.status')"
+          LINK=$(echo "$INFO" | jq -r '[((.data.children // .data.childs // {}) | .[]?) | select(.name == "system-files.zip") | .link] | first // empty')
+          if [ -z "$LINK" ]; then
+            echo 'Could not access GoFile folder or locate system-files.zip'
+            exit 1
+          fi
+          curl --fail --location --retry 3 --retry-delay 3 \
+            -H "Authorization: Bearer $TOKEN" "$LINK" -o system-files.zip
+          unzip -t system-files.zip | tail -3
+      - name: Extract only the two donor libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          unzip -p system-files.zip build.prop > output/build.prop
+          unzip -p system-files.zip lib64.tar | tar -tf - | \
+            grep -E '(^|/)(libveframework\.videoeditor\.samsung\.so|libveengine\.arcsoft\.so)$' > paths.txt || true
+          cat paths.txt
+          test -s paths.txt
+          unzip -p system-files.zip lib64.tar | tar -xf - -C output -T paths.txt
+          find output -type f -printf '%P: %s bytes\n'
+      - name: Upload small donor files for comparison
+        uses: actions/upload-artifact@v4
+        with:
+          name: s24-fancam-two-libraries
+          path: output/
+          retention-days: 7
